@@ -9,8 +9,8 @@ from dotenv import load_dotenv
 
 load_dotenv()
 
-GEMINI_MODEL = "gemini-1.5-flash"
-GROQ_MODEL = "llama3-70b-8192"
+GEMINI_MODEL = os.getenv("GEMINI_MODEL", "gemini-2.0-flash")
+GROQ_MODEL = os.getenv("GROQ_MODEL", "llama-3.3-70b-versatile")
 MAX_RETRIES = 3
 RETRY_SLEEP_SECONDS = 2
 
@@ -19,7 +19,7 @@ class LLMClient:
     """Unified LLM interface backed by Gemini or Groq."""
 
     def __init__(self, provider: str | None = None) -> None:
-        self.provider = (provider or os.getenv("LLM_PROVIDER", "gemini")).lower().strip()
+        self.provider = (provider or os.getenv("LLM_PROVIDER", "groq")).lower().strip()
         print(f"[LLM] Using provider: {self.provider}")
 
         if self.provider == "gemini":
@@ -55,10 +55,13 @@ class LLMClient:
                 return self._call_groq(system_prompt, user_prompt)
             except Exception as exc:  # noqa: BLE001 — retry on any provider failure
                 last_error = exc
+                print(f"[LLM] Attempt {attempt}/{MAX_RETRIES} failed: {exc}")
                 if attempt < MAX_RETRIES:
                     time.sleep(RETRY_SLEEP_SECONDS)
 
-        raise RuntimeError(f"LLM call failed after {MAX_RETRIES} attempts") from last_error
+        raise RuntimeError(
+            f"LLM call failed after {MAX_RETRIES} attempts ({self.provider}): {last_error}"
+        ) from last_error
 
     def _call_gemini(self, system_prompt: str, user_prompt: str) -> str:
         prompt = f"{system_prompt.strip()}\n\n---\n\n{user_prompt.strip()}"
