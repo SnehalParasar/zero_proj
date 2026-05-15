@@ -18,7 +18,7 @@ from agents.agent2_executor import SandboxExecutor
 from agents.agent3_critic import LogCritic
 from state import SharedState, get_state, set_state
 from tools.github_tool import open_github_pr
-from tracing.omium import trace_workflow
+from tracing.omium import set_current_state, trace_workflow
 
 load_dotenv()
 
@@ -47,6 +47,7 @@ def _print_startup_info() -> None:
         print(f"[startup] Groq model: {os.getenv('GROQ_MODEL', 'llama-3.3-70b-versatile')}")
     print(f"[startup] GitHub target repo: {os.getenv('GITHUB_REPO', '(not set)')}")
     print(f"[startup] Tavily configured: {bool(os.getenv('TAVILY_API_KEY'))}")
+    print(f"[startup] Omium configured: {bool(os.getenv('OMIUM_API_KEY'))}")
 
 
 @asynccontextmanager
@@ -73,6 +74,7 @@ async def run_pipeline(state: SharedState) -> SharedState:
     3. Critic → success / retry
     4. GitHub PR on success
     """
+    set_current_state(state)
     state.status = "running"
     state.log_feed("pipeline", f"Pipeline started — run_id={state.run_id}")
 
@@ -200,6 +202,7 @@ async def webhook(request: Request, background_tasks: BackgroundTasks) -> JSONRe
     state = SharedState(trigger=payload, status="started")
     active_runs[state.run_id] = state
     set_state(state)
+    set_current_state(state)
 
     state.log_feed(
         "webhook",

@@ -1,9 +1,8 @@
-"""GitHub integration — branches, file pushes, and pull requests."""
+"""GitHub integration — autonomous remediation pull requests."""
 
 from __future__ import annotations
 
 import os
-from datetime import datetime, timezone
 
 from dotenv import load_dotenv
 from github import Github
@@ -14,109 +13,89 @@ from tracing.omium import trace_tool
 
 load_dotenv()
 
-DEFAULT_PATCH_PATH = "security/patches/zero-day-fix.py"
 
+def _patch_file_content(run_id: str) -> str:
+    return f'''"""
+# AUTO-GENERATED PATCH by Project Zero-Day
+# Run ID: {run_id}
+# Vulnerability: Command Injection
+# Original vulnerable code used shell=True with unsanitized input
 
-def _repo_name() -> str:
-    repo = os.getenv("GITHUB_REPO", "").strip()
-    if not repo:
-        raise ValueError("GITHUB_REPO is not set")
-    return repo
+import subprocess
+import shlex
 
-
-def _github_client() -> Github:
-    token = os.getenv("GITHUB_PAT", "").strip()
-    if not token:
-        raise ValueError("GITHUB_PAT is not set")
-    return Github(token)
-
-
-@trace_tool("github_branch")
-def create_branch(branch_name: str) -> str:
-    """Create a new branch from the repo default branch."""
-    gh = _github_client()
-    repo = gh.get_repo(_repo_name())
-    source = repo.get_branch(repo.default_branch)
-    repo.create_git_ref(ref=f"refs/heads/{branch_name}", sha=source.commit.sha)
-    return branch_name
-
-
-@trace_tool("github_push")
-def push_file(branch: str, path: str, content: str, message: str) -> str:
-    """Create or update a file on the given branch."""
-    gh = _github_client()
-    repo = gh.get_repo(_repo_name())
-    try:
-        existing = repo.get_contents(path, ref=branch)
-        repo.update_file(path, message, content, existing.sha, branch=branch)
-    except GithubException:
-        repo.create_file(path, message, content, branch=branch)
-    return path
+def safe_run_command(user_input: str) -> str:
+    # PATCH: Use shlex.split and shell=False to prevent injection
+    allowed_commands = ["ls", "whoami", "date"]
+    cmd = user_input.strip().split()[0]
+    if cmd not in allowed_commands:
+        return "Command not permitted"
+    args = shlex.split(user_input)
+    result = subprocess.check_output(args, shell=False, timeout=5)
+    return result.decode()
+'''
 
 
 @trace_tool("github_pr")
-def create_pull_request(branch: str, title: str, body: str) -> str:
-    """Open a pull request and return its HTML URL."""
-    gh = _github_client()
-    repo = gh.get_repo(_repo_name())
-    pr = repo.create_pull(title=title, body=body, head=branch, base=repo.default_branch)
-    return pr.html_url
-
-
-@trace_tool("github_open_pr")
 def open_github_pr(state: SharedState) -> str:
-    """
-    Open a remediation PR after successful exploitation.
-    Pushes patch/report content and stores URL on state.
-    """
-    run_id = state.run_id
-    branch_name = f"zero-day/patch-{run_id[:8]}"
-    timestamp = datetime.now(timezone.utc).isoformat()
+    """Create patch branch, commit fix file, and open a pull request."""
+    g = Github(os.getenv("GITHUB_PAT"))
+    repo = g.get_repo(os.getenv("GITHUB_REPO"))
 
-    patch_body = state.patch_code.strip() or (
-        '"""Remediation stub for command injection in POST /run."""\n\n'
-        "import shlex\nimport subprocess\n\n\n"
-        "def run_safe_command(command: str) -> str:\n"
-        '    """Run command without shell=True; reject metacharacters."""\n'
-        "    if any(c in command for c in ';|&$`<>\\n'):\n"
-        '        raise ValueError("Unsafe characters in command")\n'
-        "    args = shlex.split(command)\n"
-        "    return subprocess.check_output(args, text=True)\n"
-    )
-    state.patch_code = patch_body
+    short_id = state.run_id[:8]
+    branch_name = f"zero-day-patch-{short_id}"
+    patch_path = f"patches/patch_{short_id}.py"
+    patch_content = _patch_file_content(state.run_id)
+    state.patch_code = patch_content
 
-    report = (
-        f"# Project Zero-Day — Security Report\n\n"
-        f"- Run ID: `{run_id}`\n"
-        f"- Timestamp: {timestamp}\n"
-        f"- Status: Exploit succeeded in sandbox\n\n"
-        f"## Summary\n\n"
-        f"{state.battle_plan[:2000] if state.battle_plan else 'Command injection in /run endpoint.'}\n\n"
-        f"## Remediation\n\n"
-        f"See `{DEFAULT_PATCH_PATH}` for a safe command execution helper.\n"
+    default_branch = repo.default_branch
+    base_sha = repo.get_branch(default_branch).commit.sha
+
+    try:
+        repo.create_git_ref(ref=f"refs/heads/{branch_name}", sha=base_sha)
+    except GithubException as exc:
+        if exc.status != 422:
+            raise
+
+    commit_message = f"fix(security): auto-patch command injection [{short_id}]"
+    try:
+        existing = repo.get_contents(patch_path, ref=branch_name)
+        repo.update_file(
+            patch_path,
+            commit_message,
+            patch_content,
+            existing.sha,
+            branch=branch_name,
+        )
+    except GithubException:
+        repo.create_file(
+            patch_path,
+            commit_message,
+            patch_content,
+            branch=branch_name,
+        )
+
+    pr_title = f"[Zero-Day Auto-Patch] Command Injection Fix - {short_id}"
+    pr_body = (
+        "## Automated Security Patch\n\n"
+        "**Vulnerability:** Command Injection\n"
+        "**Detected by:** Project Zero-Day Autonomous Pipeline\n"
+        f"**Run ID:** {state.run_id}\n\n"
+        "### Exploit Used:\n"
+        f"```python\n{state.current_exploit_code}\n```\n\n"
+        "### Fix Applied:\n"
+        "Replaced shell=True with shlex.split and whitelist validation.\n\n"
+        "**This PR was opened autonomously. No human was involved.**"
     )
 
-    state.log_feed("GitHub", f"Creating branch {branch_name}")
-    create_branch(branch_name)
-
-    push_file(
-        branch_name,
-        DEFAULT_PATCH_PATH,
-        patch_body,
-        f"fix(security): add safe command runner [{run_id[:8]}]",
-    )
-    push_file(
-        branch_name,
-        f"security/reports/{run_id}.md",
-        report,
-        f"docs(security): zero-day report [{run_id[:8]}]",
+    pr = repo.create_pull(
+        title=pr_title,
+        body=pr_body,
+        head=branch_name,
+        base=default_branch,
     )
 
-    pr_url = create_pull_request(
-        branch_name,
-        f"[Zero-Day] Remediate command injection ({run_id[:8]})",
-        report,
-    )
+    pr_url = pr.html_url
     state.pr_url = pr_url
-    state.log_feed("GitHub", f"Pull request opened: {pr_url}")
+    state.log_feed("GitHub", f"PR opened: {pr_url}")
     return pr_url

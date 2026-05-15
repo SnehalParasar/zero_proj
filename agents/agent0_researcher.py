@@ -34,6 +34,7 @@ class ThreatResearcher:
             raise ValueError("TAVILY_API_KEY is required for ThreatResearcher")
         self._client = client or TavilyClient(api_key=api_key)
 
+    @trace_tool("threat_research")
     def research(self, trigger: dict) -> str:
         """Search Tavily and return a structured battle plan string."""
         cve_id = (

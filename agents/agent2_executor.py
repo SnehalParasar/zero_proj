@@ -25,6 +25,7 @@ EXPLOIT_TIMEOUT_SECONDS = 30
 TARGET_URL = f"http://localhost:{TARGET_PORT}/run"
 
 
+@trace_agent("sandbox_executor")
 class SandboxExecutor:
     """Builds the vulnerable target container and runs exploit scripts."""
 
@@ -115,6 +116,7 @@ class SandboxExecutor:
         self.state.sandbox_logs.append(logs)
         return logs
 
+    @trace_tool("docker_cleanup")
     def cleanup(self) -> None:
         """Stop and remove the target container."""
         if self._container is None:
@@ -136,7 +138,6 @@ class SandboxExecutor:
         self._container_id = None
 
 
-@trace_agent("sandbox_executor")
 def run(state: SharedState) -> SharedState:
     """Execute sandbox phase: container lifecycle + optional exploit from state."""
     executor = SandboxExecutor(state)
