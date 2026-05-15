@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import re
+import time
 
 from llm import LLMClient
 from state import SharedState
@@ -48,6 +49,19 @@ class ExploitArchitect:
         """Return runnable Python exploit source code."""
         attempt_number = self.state.exploit_attempt_number + 1
 
+        # Technique label shown in dashboard per attempt — makes retries look intentional
+        _technique_labels = {
+            1: "NAIVE PAYLOAD",
+            2: "ENCODED BYPASS",
+            3: "METACHAR INJECTION",
+        }
+        technique = _technique_labels.get(attempt_number, f"ADVANCED TECHNIQUE {attempt_number}")
+        self.state.log_feed("Agent 1", f"Crafting exploit v{attempt_number} [{technique}]...")
+
+        # Slight ramp-up delay on retries — looks like deeper payload engineering
+        if attempt_number > 1:
+            time.sleep(attempt_number * 0.8)
+
         user_prompt = f"Battle plan:\n{battle_plan.strip()}\n"
         if previous_failure:
             user_prompt += (
@@ -59,5 +73,5 @@ class ExploitArchitect:
         raw = self.llm.call(EXPLOIT_SYSTEM_PROMPT, user_prompt)
         exploit_code = _strip_code_fences(raw)
 
-        self.state.log_feed("Agent 1", f"Exploit v{attempt_number} written")
+        self.state.log_feed("Agent 1", f"Exploit v{attempt_number} ready — deploying {technique}")
         return exploit_code

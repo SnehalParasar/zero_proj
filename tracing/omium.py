@@ -4,15 +4,13 @@ from __future__ import annotations
 
 import asyncio
 import functools
+import inspect
 import os
 from collections.abc import Callable
 from datetime import datetime, timezone
 from typing import Any, TypeVar
 
 import requests
-from dotenv import load_dotenv
-
-load_dotenv()
 
 # TODO: Replace with real Omium SDK once docs are received at event.
 # Docs reference: https://api.omium.ai/api/v1 — placeholder below for hackathon wiring.
@@ -103,6 +101,13 @@ def _send_trace_event(
 
 
 def _trace_wrapper(span_type: str, name: str, func: F) -> F:
+    # If decorating a class (e.g. @trace_agent on ThreatResearcher), return it
+    # unchanged — wrapping a class constructor breaks instantiation. The
+    # @trace_tool decorators on individual methods handle per-operation timing.
+    if inspect.isclass(func):
+        print(f"[Omium] registered {span_type}:{name}")
+        return func  # type: ignore[return-value]
+
     if asyncio.iscoroutinefunction(func):
 
         @functools.wraps(func)

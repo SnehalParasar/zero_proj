@@ -95,13 +95,23 @@ async def run_pipeline(state: SharedState) -> SharedState:
         previous_failure: str | None = None
         container_logs = ""
 
+        # Attempt narrative shown in the dashboard feed
+        _attempt_labels = {
+            1: "INITIAL RECON — naive payload injection",
+            2: "EVASION DETECTED — switching to encoded bypass",
+            3: "ESCALATING — metacharacter injection technique",
+            4: "DEEP PENETRATION — advanced obfuscation active",
+            5: "FINAL ATTEMPT — full bypass arsenal deployed",
+        }
+
         # Agents 1 + 2 + 3 — retry loop
         attempt = 0
         while attempt < MAX_RETRIES:
             state.exploit_attempt_number = attempt + 1
+            label = _attempt_labels.get(state.exploit_attempt_number, f"Attempt {state.exploit_attempt_number}")
             state.log_feed(
                 "pipeline",
-                f"Attempt {state.exploit_attempt_number}/{MAX_RETRIES}",
+                f"[ATTEMPT {state.exploit_attempt_number}/{MAX_RETRIES}] {label}",
             )
 
             exploit_code = architect.write_exploit(state.battle_plan, previous_failure)
@@ -115,18 +125,19 @@ async def run_pipeline(state: SharedState) -> SharedState:
 
             if analysis.get("success"):
                 state.exploit_success = True
-                state.log_feed("pipeline", "Exploit succeeded — stopping retry loop.")
+                state.log_feed("pipeline", f"✓ TARGET BREACHED on attempt {state.exploit_attempt_number} — stopping retry loop.")
                 break
 
             previous_failure = analysis.get("reason", "Unknown failure")
             state.log_feed(
                 "pipeline",
-                f"Attempt failed — retrying. Reason: {previous_failure}",
+                f"✗ Attempt {state.exploit_attempt_number} neutralised — escalating. Reason: {previous_failure}",
             )
             attempt += 1
         else:
             state.exploit_success = False
             state.log_feed("pipeline", f"All {MAX_RETRIES} exploit attempts exhausted.")
+
 
     except docker.errors.DockerException as exc:
         state.exploit_success = False
