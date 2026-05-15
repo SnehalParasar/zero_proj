@@ -180,6 +180,7 @@ async def get_run_status(run_id: str) -> dict[str, Any]:
         "agent_feed": state.agent_feed,
         "battle_plan": state.battle_plan,
         "exploit_attempt_number": state.exploit_attempt_number,
+        "current_exploit_code": state.current_exploit_code,
     }
 
 
