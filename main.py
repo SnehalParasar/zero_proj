@@ -3,14 +3,16 @@
 from __future__ import annotations
 
 import asyncio
+import os
+from contextlib import asynccontextmanager
 from typing import Any
 
 import docker
 from dotenv import load_dotenv
-from fastapi import BackgroundTasks, FastAPI, Request
+from fastapi import BackgroundTasks, FastAPI, HTTPException, Request
 from fastapi.responses import JSONResponse
 
-from agents.agent0_researcher import run as run_researcher
+from agents.agent0_researcher import ThreatResearcher
 from agents.agent1_architect import ExploitArchitect
 from agents.agent2_executor import SandboxExecutor
 from agents.agent3_critic import LogCritic
@@ -22,50 +24,82 @@ load_dotenv()
 
 MAX_RETRIES = 5
 
-DEFAULT_BATTLE_PLAN = """
-Target: Vulnerable Flask application in Docker at http://localhost:5001
-Vulnerability: OS command injection via POST /run JSON field "command"
-  (subprocess shell=True, no sanitization)
-Objective: Achieve command execution; read /etc/passwd or create a proof file
-Constraints: Exploit must use Python requests library from the host against localhost:5001
+# All in-flight and completed runs keyed by run_id
+active_runs: dict[str, SharedState] = {}
+
+BANNER = r"""
+  ____            _       ____            __   ______        __
+ |  _ \ ___  __ _| | __  |  _ \  _____  _\ \ / /  _ \  ___  \ \
+ | |_) / _ \/ _` | |/ /  | | | |/ _ \ \/ /\ V /| | | |/ _ \  \ \
+ |  __/  __/ (_| |   <   | |_| |  __/>  <  | | | |_| | (_) | / /
+ |_|   \___|\__,_|_|\_\  |____/ \___/_/\_\ |_| |____/ \___/ /_/
+                    Project Zero-Day — Autonomous Security Pipeline
 """
+
+
+def _print_startup_info() -> None:
+    print(BANNER)
+    provider = os.getenv("LLM_PROVIDER", "groq").strip().lower()
+    print(f"[startup] LLM provider: {provider}")
+    if provider == "gemini":
+        print(f"[startup] Gemini model: {os.getenv('GEMINI_MODEL', 'gemini-2.0-flash')}")
+    else:
+        print(f"[startup] Groq model: {os.getenv('GROQ_MODEL', 'llama-3.3-70b-versatile')}")
+    print(f"[startup] GitHub target repo: {os.getenv('GITHUB_REPO', '(not set)')}")
+    print(f"[startup] Tavily configured: {bool(os.getenv('TAVILY_API_KEY'))}")
+
+
+@asynccontextmanager
+async def lifespan(_app: FastAPI):
+    _print_startup_info()
+    yield
+
 
 app = FastAPI(
     title="Project Zero-Day",
     description="Multi-agent autonomous security pipeline",
-    version="0.2.0",
+    version="0.3.0",
+    lifespan=lifespan,
 )
 
 
 @trace_workflow("zero_day_pipeline")
 async def run_pipeline(state: SharedState) -> SharedState:
-    """Core retry loop: architect → executor → critic until success or max retries."""
+    """
+    Full pipeline:
+    0. Threat research → battle_plan
+    1. Architect → exploit code (retry loop with critic)
+    2. Executor → Docker sandbox
+    3. Critic → success / retry
+    4. GitHub PR on success
+    """
     state.status = "running"
     state.log_feed("pipeline", f"Pipeline started — run_id={state.run_id}")
 
-    # Phase 0: researcher stub (battle plan may be enriched later)
-    state = run_researcher(state)
-    if not state.battle_plan.strip():
-        state.battle_plan = DEFAULT_BATTLE_PLAN.strip()
-        state.log_feed("pipeline", "Using default battle plan (researcher pending).")
-
-    executor = SandboxExecutor(state)
+    researcher = ThreatResearcher(state)
     architect = ExploitArchitect(state)
+    executor = SandboxExecutor(state)
     critic = LogCritic(state)
 
-    previous_failure: str | None = None
-    container_logs = ""
-
     try:
-        state.log_feed("pipeline", "Starting sandbox container.")
+        # Agent 0 — research
+        state.log_feed("pipeline", "Agent 0: threat research starting.")
+        state.battle_plan = researcher.research(state.trigger)
+
+        # Agent 2 — container (once per run)
+        state.log_feed("pipeline", "Agent 2: starting sandbox container.")
         executor.build_and_run_container()
 
+        previous_failure: str | None = None
+        container_logs = ""
+
+        # Agents 1 + 2 + 3 — retry loop
         attempt = 0
         while attempt < MAX_RETRIES:
             state.exploit_attempt_number = attempt + 1
             state.log_feed(
                 "pipeline",
-                f"Exploit attempt {state.exploit_attempt_number}/{MAX_RETRIES}",
+                f"Attempt {state.exploit_attempt_number}/{MAX_RETRIES}",
             )
 
             exploit_code = architect.write_exploit(state.battle_plan, previous_failure)
@@ -83,7 +117,10 @@ async def run_pipeline(state: SharedState) -> SharedState:
                 break
 
             previous_failure = analysis.get("reason", "Unknown failure")
-            state.log_feed("pipeline", f"Attempt failed — retrying. Reason: {previous_failure}")
+            state.log_feed(
+                "pipeline",
+                f"Attempt failed — retrying. Reason: {previous_failure}",
+            )
             attempt += 1
         else:
             state.exploit_success = False
@@ -93,6 +130,10 @@ async def run_pipeline(state: SharedState) -> SharedState:
         state.exploit_success = False
         state.status = "failed"
         state.log_feed("pipeline", f"Docker error: {exc}")
+    except Exception as exc:  # noqa: BLE001 — research / LLM failures
+        state.exploit_success = False
+        state.status = "failed"
+        state.log_feed("pipeline", f"Pipeline error: {exc}")
     finally:
         executor.cleanup()
 
@@ -102,13 +143,14 @@ async def run_pipeline(state: SharedState) -> SharedState:
             open_github_pr(state)
             state.status = "success"
             state.log_feed("pipeline", "Pipeline completed successfully.")
-        except Exception as exc:  # noqa: BLE001 — surface GitHub failures on state
+        except Exception as exc:  # noqa: BLE001
             state.status = "failed"
             state.log_feed("pipeline", f"GitHub PR failed: {exc}")
     elif state.status != "failed":
         state.status = "failed"
         state.log_feed("pipeline", "Pipeline failed — no successful exploit.")
 
+    active_runs[state.run_id] = state
     return state
 
 
@@ -118,29 +160,62 @@ def _run_pipeline_sync(state: SharedState) -> None:
 
 
 @app.get("/health")
-async def health() -> dict[str, str]:
-    return {"status": "ok"}
+async def health() -> dict[str, Any]:
+    return {"status": "ok", "active_runs": len(active_runs)}
+
+
+@app.get("/status/{run_id}")
+async def get_run_status(run_id: str) -> dict[str, Any]:
+    """Poll agent feed and outcome for a specific pipeline run."""
+    state = active_runs.get(run_id)
+    if state is None:
+        raise HTTPException(status_code=404, detail=f"Run {run_id} not found")
+    return {
+        "run_id": state.run_id,
+        "status": state.status,
+        "exploit_success": state.exploit_success,
+        "pr_url": state.pr_url,
+        "agent_feed": state.agent_feed,
+        "battle_plan": state.battle_plan,
+        "exploit_attempt_number": state.exploit_attempt_number,
+    }
 
 
 @app.get("/state")
 async def read_state() -> dict[str, Any]:
+    """Return the most recently triggered run (backward compatible)."""
     return get_state().to_dict()
 
 
 @app.post("/webhook")
 async def webhook(request: Request, background_tasks: BackgroundTasks) -> JSONResponse:
-    """Receive external trigger (e.g. GitHub, manual) and start the pipeline."""
+    """
+    Trigger the pipeline.
+
+    Body example:
+    {"cve_id": "CVE-2024-1234", "target": "flask-app", "description": "..."}
+    """
     payload: dict[str, Any] = await request.json()
 
-    state = SharedState(trigger=payload)
+    state = SharedState(trigger=payload, status="started")
+    active_runs[state.run_id] = state
     set_state(state)
-    state.log_feed("webhook", f"Webhook received — run_id={state.run_id}")
+
+    state.log_feed(
+        "webhook",
+        f"Pipeline initiated — cve={payload.get('cve_id', 'n/a')} "
+        f"target={payload.get('target', 'n/a')}",
+    )
 
     background_tasks.add_task(_run_pipeline_sync, state)
 
     return JSONResponse(
         status_code=202,
-        content={"accepted": True, "run_id": state.run_id, "status": state.status},
+        content={
+            "run_id": state.run_id,
+            "status": "started",
+            "message": "Pipeline initiated",
+        },
     )
 
 
