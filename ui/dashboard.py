@@ -77,36 +77,66 @@ h1,h2,h3,h4,h5,h6,p,span,label,div,li {
 ::-webkit-scrollbar-track { background: #000; }
 ::-webkit-scrollbar-thumb { background: #00ff41; }
 
+@keyframes pulse {
+    0%,100% { opacity:1; }
+    50%      { opacity:0.3; }
+}
 @keyframes pulse-green {
     0%,100% { opacity:1; text-shadow: 0 0 8px #00ff41; }
     50%      { opacity:0.5; text-shadow: none; }
 }
 @keyframes pulse-red {
-    0%,100% { opacity:1; color:#ff3333; text-shadow: 0 0 12px #ff0000; }
+    0%,100% { opacity:1; text-shadow: 0 0 12px #ff0000; }
     50%      { opacity:0.35; }
 }
 @keyframes blink { 0%,100%{opacity:1;} 50%{opacity:0;} }
-@keyframes redflash {
-    0%   { background-color: #000000; }
-    25%  { background-color: #ff000033; }
-    50%  { background-color: #000000; }
-    75%  { background-color: #ff000033; }
-    100% { background-color: #000000; }
+@keyframes breachflash {
+    0%   { opacity:1; }
+    25%  { opacity:0.3; }
+    50%  { opacity:1; }
+    75%  { opacity:0.3; }
+    100% { opacity:1; }
 }
 @keyframes glowgreen {
     from { text-shadow: 0 0 8px #00ff41; }
     to   { text-shadow: 0 0 24px #00ff41, 0 0 48px #00ff4188; }
 }
-.status-active { color:#00ff41 !important; animation: pulse-green 1.5s ease-in-out infinite; }
-.status-breach { color:#ff3333 !important; animation: pulse-red 0.6s ease-in-out infinite; }
-.status-standby { color:#004411 !important; }
+/* FIX 1 — status classes */
+.status-active  { color:#00ff41 !important; animation: pulse 1.5s ease-in-out infinite; }
+.status-breach  { color:#ff3333 !important; animation: pulse 0.4s ease-in-out infinite; }
+.status-standby { color:#1a4a1a !important; }
 .blink { animation: blink 1s step-end infinite; }
 .glow  { color:#00ff41 !important; animation: glowgreen 0.9s ease-in-out infinite alternate; }
-.red-flash { animation: redflash 0.4s ease-in-out 3; }
+/* FIX 5 — compromised text */
 .compromised {
-    color:#00ff41 !important; font-size:1.3rem !important;
-    letter-spacing:0.2em; animation: glowgreen 0.8s ease-in-out infinite alternate;
+    color:#00ff41 !important;
+    font-size:1.6rem !important;
+    letter-spacing:0.2em;
+    text-shadow: 0 0 20px #00ff41, 0 0 40px #00ff41;
+    animation: blink 1s step-end infinite;
     font-family:'Courier New',monospace !important;
+    text-align:center;
+}
+/* FIX 6 — breach overlay */
+.breach-overlay {
+    position:fixed; top:0; left:0;
+    width:100vw; height:100vh;
+    background-color:rgba(255,0,0,0.18);
+    z-index:99998; pointer-events:none;
+    animation: breachflash 0.6s ease-in-out 3;
+    animation-fill-mode:forwards;
+}
+.breach-overlay-text {
+    position:fixed; top:50%; left:50%;
+    transform:translate(-50%,-50%);
+    z-index:99999; color:#ff0000;
+    font-family:'Courier New',monospace;
+    font-size:3.5rem; font-weight:bold;
+    letter-spacing:0.3em;
+    text-shadow:0 0 30px #ff0000, 0 0 60px #ff0000;
+    pointer-events:none;
+    animation: breachflash 0.6s ease-in-out 3;
+    text-align:center; white-space:nowrap;
 }
 </style>
 """
@@ -150,24 +180,56 @@ def _panel(title: str, body: str, height: str = "auto") -> str:
         f'{body}</div></div>'
     )
 
+# FIX 8 — fail/success keyword lists
+_FAIL_KEYWORDS = (
+    "✗","neutralised","neutralized","exploit failed","blocked",
+    "attempt failed","escalating","reason:","no signs",
+    "insufficient privileges","failed","incorrect payload",
+)
+_OK_KEYWORDS = (
+    "✓","success","compromised","breached","pr opened",
+    "patch deployed","exploit success",
+)
+
+def _line_style(msg: str, color: str) -> str:
+    """Return a fully styled div for a feed line (FIX 8)."""
+    ml = msg.lower()
+    if any(x in ml for x in _FAIL_KEYWORDS):
+        return (
+            f'<div style="background-color:rgba(255,0,0,0.12);'
+            f'border-left:3px solid #ff3333;color:#ff4444;'
+            f'padding:2px 6px;margin:1px 0;'
+            f'font-family:Courier New,monospace;'
+            f'font-size:0.85rem;line-height:1.45;">{{inner}}</div>'
+        )
+    if any(x in ml for x in _OK_KEYWORDS):
+        return (
+            f'<div style="color:#ffffff;font-weight:bold;'
+            f'background-color:rgba(0,255,65,0.08);'
+            f'border-left:3px solid #00ff41;'
+            f'padding:2px 6px;margin:1px 0;'
+            f'font-family:Courier New,monospace;'
+            f'font-size:0.85rem;line-height:1.45;">{{inner}}</div>'
+        )
+    return (
+        f'<div style="color:{color};margin:1px 0;word-break:break-word;'
+        f'padding:2px 6px;font-family:Courier New,monospace;'
+        f'font-size:0.85rem;line-height:1.45;">{{inner}}</div>'
+    )
+
 def _feed_line(e: dict) -> str:
     ts  = html.escape(_ts(str(e.get("timestamp",""))))
     ag  = html.escape(str(e.get("agent","SYS")).upper())
     msg = html.escape(str(e.get("message","")))
     c   = _color(str(e.get("agent","")), str(e.get("message","")))
-    pfx = ""
-    ml  = msg.lower()
-    if any(x in ml for x in ("failed","error","neutralised","blocked")):
-        pfx = '<span style="color:#ff3333">✗</span> '
-    elif any(x in ml for x in ("success","breached","pr opened")):
-        pfx = '<span style="color:#00ff41">✓</span> '
-    return (
-        f'<div style="color:{c};margin:0.06rem 0;word-break:break-word;font-size:0.7rem;">'
+    inner = (
         f'<span style="color:#004400">C:\\&gt;</span> '
         f'<span style="color:#005511">[{ts}]</span> '
         f'<span style="font-weight:bold;color:{c}">[{ag}]</span> '
-        f'<span style="color:{c}">&gt;&gt; {pfx}{msg}</span></div>'
+        f'<span>&gt;&gt; {msg}</span>'
     )
+    tmpl = _line_style(str(e.get("message","")), c)
+    return tmpl.format(inner=inner)
 
 def _module_states(feed: list[dict]) -> dict[str, str]:
     states = {
@@ -200,18 +262,31 @@ def _module_states(feed: list[dict]) -> dict[str, str]:
     return states
 
 def _render_mod(name: str, state: str) -> str:
+    """FIX 3 — clean module display."""
     if state == "running":
-        return (f'<div style="color:#00ff41;font-size:0.7rem;margin:0.1rem 0;">'
-                f'<span style="animation:pulse-green 1s infinite;">▶▶▶</span> '
-                f'<b>{name}</b> <span>[ACTIVE]</span></div>')
+        return (
+            f'<div style="color:#00ff41;font-size:0.73rem;margin:0.1rem 0;'
+            f'font-family:Courier New,monospace;font-weight:bold;">'
+            f'&gt;&gt;&gt; {name} '
+            f'<span style="color:#00ff41;">[ACTIVE]</span></div>'
+        )
     if state == "done":
-        return (f'<div style="color:#00cc33;font-size:0.7rem;margin:0.1rem 0;">'
-                f'✓ {name} <span style="color:#00cc33">[DONE]</span></div>')
+        return (
+            f'<div style="color:#00ff41;font-size:0.73rem;margin:0.1rem 0;'
+            f'font-family:Courier New,monospace;">'
+            f'✓ {name} <span style="color:#00ff41;">[DONE]</span></div>'
+        )
     if state in ("armed","active","linked","ready"):
-        return (f'<div style="color:#007722;font-size:0.7rem;margin:0.1rem 0;">'
-                f'· {name} <span style="color:#007722">[{state.upper()}]</span></div>')
-    return (f'<div style="color:#1a4a1a;font-size:0.7rem;margin:0.1rem 0;">'
-            f'· {name} <span style="color:#1a4a1a">[STANDBY]</span></div>')
+        return (
+            f'<div style="color:#1a6b1a;font-size:0.73rem;margin:0.1rem 0;'
+            f'font-family:Courier New,monospace;">'
+            f'· {name} <span style="color:#1a6b1a;">[{state.upper()}]</span></div>'
+        )
+    return (
+        f'<div style="color:#1a4a1a;font-size:0.73rem;margin:0.1rem 0;'
+        f'font-family:Courier New,monospace;">'
+        f'· {name} <span style="color:#1a4a1a;">[STANDBY]</span></div>'
+    )
 
 def _post_webhook(cve_id: str, target: str, desc: str) -> dict | None:
     try:
@@ -271,21 +346,23 @@ def main() -> None:
     else:
         sys_label, sys_cls = "STANDBY", "status-standby"
 
-    # ── TOP HEADER BAR ───────────────────────────────────────────────────────
+    # ── TOP HEADER BAR (FIX 1) ───────────────────────────────────────────────
     st.markdown(f"""
 <div style="display:flex;justify-content:space-between;align-items:center;
-    border-bottom:1px solid #00ff41;padding:0.3rem 0.4rem;
+    border-bottom:1px solid #00ff41;padding:0.35rem 0.5rem;
     background:#000;margin-bottom:0.5rem;">
-  <span style="color:#00ff41;font-family:'Courier New',monospace;font-size:0.68rem;
-               letter-spacing:0.12em;text-transform:uppercase;">
-    PROJECT-ZERO v1.0 [ONLINE]
+  <span style="color:#00ff41;font-family:'Courier New',monospace;font-size:1.6rem;
+               letter-spacing:0.35em;text-transform:uppercase;
+               text-shadow:0 0 12px #00ff41, 0 0 25px #00ff41;
+               font-weight:bold;margin-bottom:0.3rem;">
+    PROJECT-ZERO
   </span>
-  <span style="color:#00cc33;font-family:'Courier New',monospace;font-size:0.7rem;
+  <span style="color:#00cc33;font-family:'Courier New',monospace;font-size:0.72rem;
                letter-spacing:0.18em;text-transform:uppercase;">
     ◈ MAIN CONSOLE | AUTONOMOUS RED-TEAM SWARM ◈
   </span>
-  <span style="font-family:'Courier New',monospace;font-size:0.68rem;
-               letter-spacing:0.1em;text-transform:uppercase;">
+  <span style="font-family:'Courier New',monospace;font-size:0.7rem;
+               letter-spacing:0.1em;text-transform:uppercase;color:#aaaaaa;">
     SYSTEM STATUS:&nbsp;
     <span class="{sys_cls}" style="font-weight:bold;">{sys_label}</span>
   </span>
@@ -345,29 +422,30 @@ def main() -> None:
                 unsafe_allow_html=True,
             )
 
-        # Access log — last 5
+        # Access log — last 5 (FIX 8 applied)
         if feed:
-            log_html = "".join(
-                f'<div style="color:#00aa00;font-size:0.62rem;margin:0.04rem 0;'
-                f'font-family:Courier New,monospace;word-break:break-word;">'
-                f'[{_ts(str(e.get("timestamp","")))}] '
-                f'{html.escape(str(e.get("agent","")).upper())}: '
-                f'{html.escape(str(e.get("message",""))[:55])}</div>'
-                for e in feed[-5:]
-            )
+            def _access_line(e: dict) -> str:
+                ts3 = _ts(str(e.get("timestamp","")))
+                ag3 = html.escape(str(e.get("agent","")).upper())
+                msg3 = html.escape(str(e.get("message",""))[:55])
+                c3 = _color(str(e.get("agent","")), str(e.get("message","")))
+                inner3 = f'[{ts3}] {ag3}: {msg3}'
+                tmpl3 = _line_style(str(e.get("message","")), c3)
+                return tmpl3.format(inner=inner3)
+            log_html = "".join(_access_line(e) for e in feed[-5:])
             st.markdown(_panel("[ ACCESS LOG ]", log_html, "110px"), unsafe_allow_html=True)
 
     # ══════════════════════════ MIDDLE COLUMN ═══════════════════════════════
     with col_m:
-        # Red flash on first breach detection
+        # FIX 6 — fullscreen breach overlay fires once
         if exploit_ok and not st.session_state.breach_flashed:
             st.session_state.breach_flashed = True
             st.markdown(
-                '<div class="red-flash" style="width:100%;border:2px solid #ff0000;'
-                'padding:0.4rem;text-align:center;margin-bottom:0.4rem;">'
-                '<span style="color:#ff3333;font-family:Courier New,monospace;'
-                'font-size:0.8rem;letter-spacing:0.2em;">⚠ SECURITY BREACH DETECTED ⚠</span>'
-                '</div>',
+                '<div class="breach-overlay"></div>'
+                '<div class="breach-overlay-text">'
+                '⚠ BREACH DETECTED ⚠<br>'
+                '<span style="font-size:1.2rem;letter-spacing:0.5em;color:#ff4444;">'
+                'SYSTEM COMPROMISED</span></div>',
                 unsafe_allow_html=True,
             )
 
@@ -381,37 +459,54 @@ def main() -> None:
                 '<span class="blink">_</span></div>'
             )
 
+        # FIX 2 — taller terminal, feed already at 0.85rem from _line_style
         console_body = (
-            f'<div id="mc" style="height:420px;overflow-y:auto;background:#000000;'
+            f'<div id="mc" style="height:440px;overflow-y:auto;background:#000000;'
             f'padding:0.3rem;">'
             f'{feed_html}'
-            f'<div style="color:#005511;font-size:0.68rem;" class="blink">C:\\&gt; _</div>'
+            f'<div style="color:#005511;font-size:0.85rem;line-height:1.45;" class="blink">C:\\&gt; _</div>'
             f'</div>'
             f'<script>var c=document.getElementById("mc");if(c)c.scrollTop=c.scrollHeight;</script>'
         )
         st.markdown(_panel("[ MAIN CONSOLE ] CMD HISTORY", console_body), unsafe_allow_html=True)
 
-        # Result banner
+        # FIX 5 + FIX 4 + FIX 7 — result banner
         if exploit_ok and status == "success":
+            # Attempt-specific breach message
+            if attempts == 1:
+                breach_msg = "FIRST STRIKE — IMMEDIATE BREACH"
+            elif attempts <= 3:
+                breach_msg = f"BREACH CONFIRMED IN {attempts} ATTEMPTS"
+            else:
+                breach_msg = f"PERSISTENT ASSAULT — BREACHED IN {attempts} ATTEMPTS"
+
             pr_btn = (
                 f'<a href="{html.escape(pr_url)}" target="_blank" '
-                f'style="display:inline-block;border:1px solid #00ff41;padding:0.3rem 0.8rem;'
-                f'color:#00ff41;font-family:Courier New,monospace;font-size:0.68rem;'
-                f'text-decoration:none;letter-spacing:0.1em;margin-top:0.4rem;">'
-                f'[ PATCH DEPLOYED → VIEW PR ]</a>'
-            ) if pr_url else ""
+                f'style="color:#00ff41;font-family:Courier New,monospace;'
+                f'font-size:0.75rem;text-decoration:none;letter-spacing:0.1em;'
+                f'border:1px solid #00ff41;padding:0.3rem 0.8rem;display:inline-block;'
+                f'margin-top:0.4rem;">VIEW PR →</a>'
+            ) if pr_url else '<span style="color:#005511;font-family:Courier New,monospace;">PENDING</span>'
+
             st.markdown(
-                f'<div style="border:2px solid #00ff41;background:#000;padding:0.5rem;'
+                f'<div style="border:2px solid #00ff41;background:#000;padding:0.6rem;'
                 f'border-radius:0;text-align:center;margin-top:0.3rem;">'
-                f'<div class="compromised">▶ TARGET COMPROMISED ◀</div>'
-                f'<div style="color:#00cc33;font-family:Courier New,monospace;font-size:0.72rem;'
-                f'letter-spacing:0.1em;margin:0.25rem 0;">'
-                f'BREACH CONFIRMED IN <b>{attempts}</b> ATTEMPT(S)</div>'
+                f'<div class="compromised">=== TARGET COMPROMISED ===</div>'
+                f'<div style="color:#00cc33;font-family:Courier New,monospace;font-size:0.9rem;'
+                f'letter-spacing:0.15em;margin:0.3rem 0;">{breach_msg}</div>'
                 f'{pr_btn}</div>',
                 unsafe_allow_html=True,
             )
+            # FIX 7 — styled exploit code block
             if ex_code.strip():
-                st.code(ex_code, language="python")
+                st.markdown(
+                    f'<pre style="overflow-y:auto;max-height:220px;background:#050505;'
+                    f'color:#00ff41;font-family:Courier New,monospace;font-size:0.78rem;'
+                    f'padding:0.75rem;border:1px solid #00ff41;border-left:3px solid #00ff41;'
+                    f'margin-top:0.4rem;white-space:pre-wrap;word-break:break-word;">'
+                    f'{html.escape(ex_code)}</pre>',
+                    unsafe_allow_html=True,
+                )
 
         elif status == "failed":
             st.markdown(
@@ -434,16 +529,17 @@ def main() -> None:
 
     # ══════════════════════════ RIGHT COLUMN ════════════════════════════════
     with col_r:
-        # Live log — last 8
+        # Live log — last 8 (FIX 8 applied)
         if feed:
-            live_html = "".join(
-                f'<div style="color:{_color(str(e.get("agent","")),str(e.get("message","")))};"'
-                f' style="font-size:0.63rem;margin:0.05rem 0;word-break:break-word;">'
-                f'<span style="color:#004400;font-size:0.63rem;">[{_ts(str(e.get("timestamp","")))}]</span> '
-                f'<b style="font-size:0.63rem;">{html.escape(str(e.get("agent","")).upper())}</b>: '
-                f'<span style="font-size:0.63rem;">{html.escape(str(e.get("message",""))[:52])}</span></div>'
-                for e in feed[-8:]
-            )
+            def _short_line(e: dict) -> str:
+                ts2 = _ts(str(e.get("timestamp","")))
+                ag2 = html.escape(str(e.get("agent","")).upper())
+                msg2 = html.escape(str(e.get("message",""))[:52])
+                c2 = _color(str(e.get("agent","")), str(e.get("message","")))
+                inner2 = f'<span style="color:#004400;">[{ts2}]</span> <b>{ag2}</b>: {msg2}'
+                tmpl2 = _line_style(str(e.get("message","")), c2)
+                return tmpl2.format(inner=inner2)
+            live_html = "".join(_short_line(e) for e in feed[-8:])
         else:
             live_html = '<div style="color:#003300;font-size:0.63rem;">-- NO SIGNAL --</div>'
         st.markdown(_panel("[ LIVE LOG FEED ]", live_html, "205px"), unsafe_allow_html=True)
@@ -461,12 +557,12 @@ def main() -> None:
         st_col      = ("#ff3333" if status == "failed" else
                        "#00ff41" if status == "success" else
                        "#ffff00" if is_running else "#005511")
-        pr_disp     = (
+        # FIX 4 — full clickable PR link in data stream
+        pr_disp = (
             f'<a href="{html.escape(pr_url)}" target="_blank" '
-            f'style="color:#66ff66;font-size:0.62rem;text-decoration:none;">'
-            f'{pr_url[:28]}…</a>' if pr_url else
-            '<span style="color:#005511;">PENDING</span>'
-        )
+            f'style="color:#00ff41;text-decoration:none;'
+            f'font-family:Courier New,monospace;">VIEW PR →</a>'
+        ) if pr_url else '<span style="color:#005511;">PENDING</span>'
 
         def _row(label: str, val: str) -> str:
             return (
